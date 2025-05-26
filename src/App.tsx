@@ -9,6 +9,7 @@ interface Transaction {
   from: string;
   to: string;
   blockNumber: string;
+  isError: string;
 }
 
 interface CacheData {
@@ -151,6 +152,7 @@ function App() {
         return (
           txTimestamp >= startTimestamp &&
           txTimestamp <= endTimestamp &&
+          tx.isError === "0" &&
           (tx.to.toLowerCase() === TARGET_ADDRESS || tx.from.toLowerCase() === TARGET_ADDRESS)
         );
       });
