@@ -1,35 +1,261 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useState, useEffect } from "react";
+import axios from "axios";
+// import { format } from "date-fns";
+import { FaSearch, FaHistory, FaCog } from "react-icons/fa";
 
-function App() {
-  const [count, setCount] = useState(0)
-
-  return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+interface Transaction {
+  hash: string;
+  timeStamp: string;
+  from: string;
+  to: string;
+  blockNumber: string;
 }
 
-export default App
+interface CacheData {
+  transactions: Transaction[];
+  lastUpdate: number;
+}
+
+interface TransactionCache {
+  [address: string]: CacheData;
+}
+
+function App() {
+  const [address, setAddress] = useState("");
+  const [txCount, setTxCount] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKey, setApiKey] = useState(() => {
+    return localStorage.getItem("bscscanApiKey") || "";
+  });
+  const [history, setHistory] = useState<string[]>(() => {
+    const saved = localStorage.getItem("addressHistory");
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [txCache, setTxCache] = useState<TransactionCache>(() => {
+    const saved = localStorage.getItem("txCache");
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const TARGET_ADDRESS = "0xb300000b72DEAEb607a12d5f54773D1C19c7028d".toLowerCase();
+
+  useEffect(() => {
+    localStorage.setItem("addressHistory", JSON.stringify(history));
+  }, [history]);
+
+  useEffect(() => {
+    localStorage.setItem("txCache", JSON.stringify(txCache));
+  }, [txCache]);
+
+  useEffect(() => {
+    localStorage.setItem("bscscanApiKey", apiKey);
+  }, [apiKey]);
+
+  const getBlockNumberByTimestamp = async (timestamp: number): Promise<number> => {
+    if (!apiKey) {
+      throw new Error("请先设置 BSCScan API Key");
+    }
+
+    try {
+      const response = await axios.get(`https://api.bscscan.com/api`, {
+        params: {
+          module: "block",
+          action: "getblocknobytime",
+          timestamp: timestamp,
+          closest: "before",
+          apikey: apiKey,
+        },
+      });
+
+      if (response.data.status === "1") {
+        return parseInt(response.data.result);
+      }
+      throw new Error("获取区块号失败");
+    } catch (err) {
+      throw new Error("获取区块号失败");
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!apiKey) {
+      setError("请先设置 BSCScan API Key");
+      setShowSettings(true);
+      return;
+    }
+
+    if (!address) {
+      setError("请输入地址");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setTxCount(null);
+
+    try {
+      const today = new Date();
+      const startTimestamp = Math.floor(today.setHours(8, 0, 0, 0) / 1000);
+      const endTimestamp = Math.floor(today.setHours(23, 59, 59, 999) / 1000);
+
+      const startBlock = await getBlockNumberByTimestamp(startTimestamp);
+      const addressLower = address.toLowerCase();
+      const cachedData = txCache[addressLower];
+
+      let transactions: Transaction[] = [];
+      let lastBlock = startBlock;
+
+      if (cachedData) {
+        transactions = cachedData.transactions;
+        lastBlock = Math.min(...transactions.map(tx => parseInt(tx.blockNumber)));
+      }
+
+      if (!cachedData || lastBlock > startBlock) {
+        const response = await axios.get(`https://api.bscscan.com/api`, {
+          params: {
+            module: "account",
+            action: "txlist",
+            address: addressLower,
+            startblock: startBlock,
+            endblock: 99999999,
+            page: 1,
+            offset: 1000,
+            sort: "desc",
+            apikey: apiKey,
+          },
+        });
+
+        if (response.data.status === "1") {
+          const newTransactions = response.data.result as Transaction[];
+          const allTransactions = [...newTransactions, ...transactions];
+          const uniqueTransactions = Array.from(
+            new Map(allTransactions.map(tx => [tx.hash, tx])).values()
+          );
+          transactions = uniqueTransactions;
+        } else {
+          throw new Error("获取数据失败");
+        }
+      }
+
+      setTxCache(prev => ({
+        ...prev,
+        [addressLower]: {
+          transactions,
+          lastUpdate: Date.now()
+        }
+      }));
+
+      const todayTxs = transactions.filter((tx) => {
+        const txTimestamp = parseInt(tx.timeStamp);
+        return (
+          txTimestamp >= startTimestamp &&
+          txTimestamp <= endTimestamp &&
+          (tx.to.toLowerCase() === TARGET_ADDRESS || tx.from.toLowerCase() === TARGET_ADDRESS)
+        );
+      });
+
+      setTxCount(todayTxs.length);
+
+      if (!history.includes(address)) {
+        setHistory((prev) => [address, ...prev].slice(0, 5));
+      }
+    } catch (err) {
+      setError("请求出错");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center p-4">
+      <div className="w-full max-w-md space-y-4">
+        <div className="flex justify-between items-center">
+          <h1 className="text-2xl font-bold text-gray-800">
+            BSC 交易统计
+          </h1>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="p-2 text-gray-600 hover:text-gray-800"
+          >
+            <FaCog className="text-xl" />
+          </button>
+        </div>
+
+        {showSettings && (
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h2 className="text-lg font-semibold mb-2">设置</h2>
+            <div className="space-y-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  BSCScan API Key
+                </label>
+                <input
+                  type="text"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="输入 BSCScan API Key"
+                  className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                />
+              </div>
+              <div className="text-xs text-gray-500">
+                在 <a href="https://bscscan.com/apis" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">BSCScan</a> 获取 API Key
+              </div>
+            </div>
+          </div>
+        )}
+        
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="flex-1 min-w-0">
+            <input
+              type="text"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="输入 EVM 地址"
+              className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm sm:text-base truncate"
+            />
+          </div>
+          <button
+            onClick={handleSearch}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-blue-300 flex items-center justify-center gap-2 whitespace-nowrap"
+          >
+            <FaSearch />
+            {loading ? "查询中..." : "查询"}
+          </button>
+        </div>
+
+        {error && <div className="text-red-500 text-center">{error}</div>}
+
+        {txCount !== null && (
+          <div className="bg-white p-4 rounded-lg shadow text-center">
+            <p className="text-gray-600">今日交易数</p>
+            <p className="text-3xl font-bold text-blue-500">{txCount}</p>
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="bg-white p-4 rounded-lg shadow w-full">
+            <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+              <FaHistory />
+              历史记录
+            </h2>
+            <div className="space-y-2 w-full">
+              {history.map((addr, index) => (
+                <div
+                  key={index}
+                  className="p-2 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 truncate"
+                  onClick={() => setAddress(addr)}
+                >
+                  {addr}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
