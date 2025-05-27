@@ -27,7 +27,7 @@ interface TokenTransfer {
 interface TradeRecord {
   hash: string;
   timeStamp: string;
-  type: 'buy' | 'sell';
+  type: "buy" | "sell";
   amount: number;
   token: string;
   usdtAmount: number;
@@ -51,6 +51,8 @@ function App() {
   const [showPNL, setShowPNL] = useState(false);
   const [tradeRecords, setTradeRecords] = useState<TradeRecord[]>([]);
   const [totalPNL, setTotalPNL] = useState<number>(0);
+  const [totalBuyAmount, setTotalBuyAmount] = useState<number>(0);
+  const [volumeLevel, setVolumeLevel] = useState<number>(0);
   const [apiKey, setApiKey] = useState(() => {
     return localStorage.getItem("bscscanApiKey") || "";
   });
@@ -64,8 +66,10 @@ function App() {
     return saved ? JSON.parse(saved) : {};
   });
 
-  const TARGET_ADDRESS = "0xb300000b72DEAEb607a12d5f54773D1C19c7028d".toLowerCase();
-  const USDT_CONTRACT = "0x55d398326f99059ff775485246999027b3197955".toLowerCase();
+  const TARGET_ADDRESS =
+    "0xb300000b72DEAEb607a12d5f54773D1C19c7028d".toLowerCase();
+  const USDT_CONTRACT =
+    "0x55d398326f99059ff775485246999027b3197955".toLowerCase();
 
   useEffect(() => {
     localStorage.setItem("addressHistory", JSON.stringify(history));
@@ -79,7 +83,9 @@ function App() {
     localStorage.setItem("bscscanApiKey", apiKey);
   }, [apiKey]);
 
-  const getBlockNumberByTimestamp = async (timestamp: number): Promise<number> => {
+  const getBlockNumberByTimestamp = async (
+    timestamp: number
+  ): Promise<number> => {
     if (!apiKey) {
       throw new Error("请先设置 BSCScan API Key");
     }
@@ -104,7 +110,10 @@ function App() {
     }
   };
 
-  const getTokenTransfers = async (addressLower: string, startBlock: number): Promise<TokenTransfer[]> => {
+  const getTokenTransfers = async (
+    addressLower: string,
+    startBlock: number
+  ): Promise<TokenTransfer[]> => {
     const response = await axios.get(`https://api.bscscan.com/api`, {
       params: {
         module: "account",
@@ -125,7 +134,24 @@ function App() {
     return [];
   };
 
-  const calculatePNL = (transfers: TokenTransfer[], transactions: Transaction[]): { records: TradeRecord[], pnl: number } => {
+  const calculateVolumeLevel = (totalVolume: number): number => {
+    if (totalVolume < 2) return 0;
+    
+    let level = 1;
+    let threshold = 2;
+    
+    while (totalVolume >= threshold && level < 20) { // 限制最大档位防止无限循环
+      level++;
+      threshold *= 2;
+    }
+    
+    return level - 1;
+  };
+
+  const calculatePNL = (
+    transfers: TokenTransfer[],
+    transactions: Transaction[]
+  ): { records: TradeRecord[]; pnl: number; buyAmount: number; volumeLevel: number } => {
     const records: TradeRecord[] = [];
     let totalBuy = 0;
     let totalSell = 0;
@@ -133,45 +159,53 @@ function App() {
     // 获取与目标地址交互的交易哈希
     const targetTxHashes = new Set(
       transactions
-        .filter(tx => 
-          tx.to.toLowerCase() === TARGET_ADDRESS || 
-          tx.from.toLowerCase() === TARGET_ADDRESS
+        .filter(
+          (tx) =>
+            tx.to.toLowerCase() === TARGET_ADDRESS ||
+            tx.from.toLowerCase() === TARGET_ADDRESS
         )
-        .map(tx => tx.hash)
+        .map((tx) => tx.hash)
     );
 
     // 过滤相关的 token 转账
-    const relevantTransfers = transfers.filter(transfer => 
-      targetTxHashes.has(transfer.hash) && 
-      transfer.contractAddress.toLowerCase() === USDT_CONTRACT
+    const relevantTransfers = transfers.filter(
+      (transfer) =>
+        targetTxHashes.has(transfer.hash) &&
+        transfer.contractAddress.toLowerCase() === USDT_CONTRACT
     );
 
-    relevantTransfers.forEach(transfer => {
-      const amount = parseFloat(transfer.value) / Math.pow(10, parseInt(transfer.tokenDecimal));
-      
-      if (transfer.from.toLowerCase() === address.toLowerCase() && 
-          transfer.to.toLowerCase() === TARGET_ADDRESS) {
+    relevantTransfers.forEach((transfer) => {
+      const amount =
+        parseFloat(transfer.value) /
+        Math.pow(10, parseInt(transfer.tokenDecimal));
+
+      if (
+        transfer.from.toLowerCase() === address.toLowerCase() &&
+        transfer.to.toLowerCase() === TARGET_ADDRESS
+      ) {
         // 买入交易 - 用户向目标地址转 USDT
         totalBuy += amount;
         records.push({
           hash: transfer.hash,
           timeStamp: transfer.timeStamp,
-          type: 'buy',
+          type: "buy",
           amount,
           token: transfer.tokenSymbol,
-          usdtAmount: amount
+          usdtAmount: amount,
         });
-      } else if (transfer.from.toLowerCase() === TARGET_ADDRESS && 
-                 transfer.to.toLowerCase() === address.toLowerCase()) {
+      } else if (
+        transfer.from.toLowerCase() === TARGET_ADDRESS &&
+        transfer.to.toLowerCase() === address.toLowerCase()
+      ) {
         // 卖出交易 - 目标地址向用户转 USDT
         totalSell += amount;
         records.push({
           hash: transfer.hash,
           timeStamp: transfer.timeStamp,
-          type: 'sell',
+          type: "sell",
           amount,
           token: transfer.tokenSymbol,
-          usdtAmount: amount
+          usdtAmount: amount,
         });
       }
     });
@@ -179,9 +213,14 @@ function App() {
     // 按时间排序
     records.sort((a, b) => parseInt(a.timeStamp) - parseInt(b.timeStamp));
 
+    const totalVolume = totalBuy + totalSell;
+    const volumeLevel = calculateVolumeLevel(totalVolume);
+
     return {
       records,
-      pnl: totalSell - totalBuy
+      pnl: totalSell - totalBuy,
+      buyAmount: totalBuy,
+      volumeLevel,
     };
   };
 
@@ -202,6 +241,8 @@ function App() {
     setTxCount(null);
     setTradeRecords([]);
     setTotalPNL(0);
+    setTotalBuyAmount(0);
+    setVolumeLevel(0);
 
     try {
       const today = new Date();
@@ -217,7 +258,9 @@ function App() {
 
       if (cachedData) {
         transactions = cachedData.transactions;
-        lastBlock = Math.max(...transactions.map(tx => parseInt(tx.blockNumber)));
+        lastBlock = Math.max(
+          ...transactions.map((tx) => parseInt(tx.blockNumber))
+        );
       }
 
       const response = await axios.get(`https://api.bscscan.com/api`, {
@@ -238,19 +281,19 @@ function App() {
         const newTransactions = response.data.result as Transaction[];
         const allTransactions = [...newTransactions, ...transactions];
         const uniqueTransactions = Array.from(
-          new Map(allTransactions.map(tx => [tx.hash, tx])).values()
+          new Map(allTransactions.map((tx) => [tx.hash, tx])).values()
         );
         transactions = uniqueTransactions;
       } else {
         throw new Error("获取数据失败");
       }
 
-      setTxCache(prev => ({
+      setTxCache((prev) => ({
         ...prev,
         [addressLower]: {
           transactions,
-          lastUpdate: Date.now()
-        }
+          lastUpdate: Date.now(),
+        },
       }));
 
       const todayTxs = transactions.filter((tx) => {
@@ -259,7 +302,8 @@ function App() {
           txTimestamp >= startTimestamp &&
           txTimestamp <= endTimestamp &&
           tx.isError === "0" &&
-          (tx.to.toLowerCase() === TARGET_ADDRESS || tx.from.toLowerCase() === TARGET_ADDRESS)
+          (tx.to.toLowerCase() === TARGET_ADDRESS ||
+            tx.from.toLowerCase() === TARGET_ADDRESS)
         );
       });
 
@@ -267,15 +311,23 @@ function App() {
 
       // 获取 token 转账记录并计算 PNL
       if (todayTxs.length > 0) {
-        const tokenTransfers = await getTokenTransfers(addressLower, startBlock);
-        const todayTransfers = tokenTransfers.filter(transfer => {
+        const tokenTransfers = await getTokenTransfers(
+          addressLower,
+          startBlock
+        );
+        const todayTransfers = tokenTransfers.filter((transfer) => {
           const transferTimestamp = parseInt(transfer.timeStamp);
-          return transferTimestamp >= startTimestamp && transferTimestamp <= endTimestamp;
+          return (
+            transferTimestamp >= startTimestamp &&
+            transferTimestamp <= endTimestamp
+          );
         });
 
-        const { records, pnl } = calculatePNL(todayTransfers, todayTxs);
+        const { records, pnl, buyAmount, volumeLevel } = calculatePNL(todayTransfers, todayTxs);
         setTradeRecords(records);
         setTotalPNL(pnl);
+        setTotalBuyAmount(buyAmount);
+        setVolumeLevel(volumeLevel);
       }
 
       if (!history.includes(address)) {
@@ -296,9 +348,7 @@ function App() {
     <div className="min-h-screen flex flex-col items-center p-4">
       <div className="w-full max-w-md space-y-4">
         <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-800">
-            BSC 交易统计
-          </h1>
+          <h1 className="text-2xl font-bold text-gray-800">BSC 交易统计</h1>
           <div className="flex gap-2">
             <button
               onClick={() => setShowPNL(!showPNL)}
@@ -333,12 +383,21 @@ function App() {
                 />
               </div>
               <div className="text-xs text-gray-500">
-                在 <a href="https://bscscan.com/apis" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">BSCScan</a> 获取 API Key
+                在{" "}
+                <a
+                  href="https://bscscan.com/apis"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-500 hover:underline"
+                >
+                  BSCScan
+                </a>{" "}
+                获取 API Key
               </div>
             </div>
           </div>
         )}
-        
+
         <div className="flex flex-col sm:flex-row gap-2">
           <div className="flex-1 min-w-0">
             <input
@@ -362,9 +421,29 @@ function App() {
         {error && <div className="text-red-500 text-center">{error}</div>}
 
         {txCount !== null && (
-          <div className="bg-white p-4 rounded-lg shadow text-center">
-            <p className="text-gray-600">今日交易数</p>
-            <p className="text-3xl font-bold text-blue-500">{txCount}</p>
+          <div className="bg-white p-4 rounded-lg shadow">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+              <div>
+                <p className="text-gray-600">今日交易数</p>
+                <p className="text-2xl font-bold text-blue-500">{txCount}</p>
+              </div>
+              {totalBuyAmount > 0 && (
+                <div>
+                  <p className="text-gray-600">买入数量</p>
+                  <p className="text-2xl font-bold text-orange-500">
+                    {totalBuyAmount.toFixed(2)} USDT
+                  </p>
+                </div>
+              )}
+              {volumeLevel > 0 && (
+                <div>
+                  <p className="text-gray-600">交易量档位</p>
+                  <p className="text-2xl font-bold text-purple-500">
+                    {volumeLevel} 分
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -375,23 +454,30 @@ function App() {
               PNL 分析
             </h2>
             <div className="mb-4">
-              <div className={`text-2xl font-bold ${totalPNL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                {totalPNL >= 0 ? '+' : ''}{totalPNL.toFixed(6)} USDT
+              <div
+                className={`text-2xl font-bold ${
+                  totalPNL >= 0 ? "text-green-500" : "text-red-500"
+                }`}
+              >
+                {totalPNL >= 0 ? "+" : ""}
+                {totalPNL.toFixed(6)} USDT
               </div>
               <div className="text-sm text-gray-500">总盈亏</div>
             </div>
-            
+
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {tradeRecords.map((record, index) => (
                 <div key={index} className="p-2 bg-gray-50 rounded text-sm">
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        record.type === 'buy' 
-                          ? 'bg-red-100 text-red-600' 
-                          : 'bg-green-100 text-green-600'
-                      }`}>
-                        {record.type === 'buy' ? '买入' : '卖出'}
+                      <span
+                        className={`px-2 py-1 rounded text-xs ${
+                          record.type === "buy"
+                            ? "bg-red-100 text-red-600"
+                            : "bg-green-100 text-green-600"
+                        }`}
+                      >
+                        {record.type === "buy" ? "买入" : "卖出"}
                       </span>
                       <span className="font-medium">
                         {record.usdtAmount.toFixed(6)} {record.token}
@@ -435,4 +521,3 @@ function App() {
 }
 
 export default App;
- 
