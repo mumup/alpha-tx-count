@@ -217,34 +217,32 @@ function App() {
 
       if (cachedData) {
         transactions = cachedData.transactions;
-        lastBlock = Math.min(...transactions.map(tx => parseInt(tx.blockNumber)));
+        lastBlock = Math.max(...transactions.map(tx => parseInt(tx.blockNumber)));
       }
 
-      if (!cachedData || lastBlock > startBlock) {
-        const response = await axios.get(`https://api.bscscan.com/api`, {
-          params: {
-            module: "account",
-            action: "txlist",
-            address: addressLower,
-            startblock: startBlock,
-            endblock: 99999999,
-            page: 1,
-            offset: 1000,
-            sort: "desc",
-            apikey: apiKey,
-          },
-        });
+      const response = await axios.get(`https://api.bscscan.com/api`, {
+        params: {
+          module: "account",
+          action: "txlist",
+          address: addressLower,
+          startblock: startBlock,
+          endblock: 99999999,
+          page: 1,
+          offset: 1000,
+          sort: "desc",
+          apikey: apiKey,
+        },
+      });
 
-        if (response.data.status === "1") {
-          const newTransactions = response.data.result as Transaction[];
-          const allTransactions = [...newTransactions, ...transactions];
-          const uniqueTransactions = Array.from(
-            new Map(allTransactions.map(tx => [tx.hash, tx])).values()
-          );
-          transactions = uniqueTransactions;
-        } else {
-          throw new Error("获取数据失败");
-        }
+      if (response.data.status === "1") {
+        const newTransactions = response.data.result as Transaction[];
+        const allTransactions = [...newTransactions, ...transactions];
+        const uniqueTransactions = Array.from(
+          new Map(allTransactions.map(tx => [tx.hash, tx])).values()
+        );
+        transactions = uniqueTransactions;
+      } else {
+        throw new Error("获取数据失败");
       }
 
       setTxCache(prev => ({
